@@ -17,7 +17,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 use tokio::fs::{self, OpenOptions};
@@ -65,20 +65,34 @@ static REQUIREMENTS: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock:
     })
 });
 
+async fn resolve_base_path(prefix: &str) -> String {
+    match prefix {
+        "workspace" => env::var("APP_WORKSPACE").unwrap_or_else(|_| "/workspace".to_string()),
+        "runtime-packages" => env::var("APP_RUNTIME_PACKAGES").unwrap_or_else(|_| "/runtime-packages".to_string()),
+        _ => panic!("Unsupported path prefix: {}", prefix),
+    }
+}
+
 async fn upload_file(
     mut payload: web::Payload,
-    path: web::Path<String>,
-    base_path: web::Path<String>,
+    path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, Error> {
-    let file_path = format!("{}/{}", base_path, path);
-    let file_dir = Path::new(&file_path).parent().unwrap();
+    let (prefix, file_path) = path.into_inner();
+    let base_path = resolve_base_path(&prefix).await;
+    
+    let full_path = PathBuf::from(&base_path).join(&file_path);
+    println!("Uploading file to {}", full_path.display());
+
+    let file_dir = full_path.parent().unwrap();
     fs::create_dir_all(file_dir).await?;
+    
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(file_path)
+        .open(&full_path)
         .await?;
+        
     while let Some(chunk) = payload.next().await {
         let data = chunk?;
         file.write_all(&data).await?;
@@ -87,10 +101,14 @@ async fn upload_file(
 }
 
 async fn download_file(
-    path: web::Path<String>,
-    base_path: web::Path<String>,
+    path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, Error> {
-    let file = tokio::fs::File::open(format!("{}/{}", base_path, path)).await?;
+    let (prefix, file_path) = path.into_inner();
+    let base_path = resolve_base_path(&prefix).await;
+    
+    let full_path = PathBuf::from(&base_path).join(&file_path);
+    
+    let file = tokio::fs::File::open(full_path).await?;
     Ok(HttpResponse::Ok()
         .content_type("application/octet-stream")
         .streaming(tokio_util::io::ReaderStream::new(file)))
@@ -120,22 +138,36 @@ async fn get_changed_files(dir: &str, since: SystemTime) -> Vec<String> {
 
 async fn execute(payload: web::Json<ExecuteRequest>) -> Result<HttpResponse, Error> {
     let workspace = env::var("APP_WORKSPACE").unwrap_or_else(|_| "/workspace".to_string());
-    let runtime_packages = "/runtime-packages";
     let execution_start_time = SystemTime::now();
     let source_dir = TempDir::new()?;
     
-    let mut read_dir = fs::read_dir(&workspace).await?;
-    while let Some(entry) = read_dir.next_entry().await? {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(extension) = path.extension() {
-                if extension == "py" {
-                    let file_name = path.file_name().unwrap();
-                    fs::copy(&path, Path::new(runtime_packages).join(file_name)).await?;
+    async fn log_directory_contents(dir: &str, prefix: &str) {
+        if let Ok(mut read_dir) = fs::read_dir(dir).await {
+            while let Ok(Some(entry)) = read_dir.next_entry().await {
+                let path = entry.path();
+                if let Ok(metadata) = entry.metadata().await {
+                    if metadata.is_dir() {
+                        println!("{}{}/", prefix, path.file_name().unwrap().to_string_lossy());
+                        Box::pin(log_directory_contents(
+                            path.to_str().unwrap(),
+                            &format!("{}  ", prefix)
+                        )).await;
+                    } else {
+                        println!("{}{} ({} bytes)", 
+                            prefix,
+                            path.file_name().unwrap().to_string_lossy(),
+                            metadata.len()
+                        );
+                    }
                 }
             }
         }
     }
+
+    println!("Contents of /workspace:");
+    log_directory_contents("/workspace", "").await;
+    println!("Contents of /runtime-packages:");
+    log_directory_contents("/runtime-packages", "").await;
 
     tokio::fs::write(source_dir.path().join("script.py"), &payload.source_code).await?;
     let guessed_deps = String::from_utf8_lossy(
@@ -162,7 +194,6 @@ async fn execute(payload: web::Json<ExecuteRequest>) -> Result<HttpResponse, Err
     }
 
     tokio::fs::rename(source_dir.path().join("script.py"), source_dir.path().join("script.xsh")).await?;
-    // log::info!("Current directory: {:?}", source_dir.path());
     
     let timeout = Duration::from_secs(payload.timeout.unwrap_or(60));
     let (stdout, stderr, exit_code) = tokio::time::timeout(
@@ -201,8 +232,8 @@ async fn web() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
             .wrap(Logger::default())
-            .route("/{base_path}/{path:.*}", web::put().to(upload_file))
-            .route("/{base_path}/{path:.*}", web::get().to(download_file))
+            .route("/{prefix}/{path:.*}", web::put().to(upload_file))
+            .route("/{prefix}/{path:.*}", web::get().to(download_file))
             .route("/execute", web::post().to(execute))
     })
     .bind(&listen_addr)?

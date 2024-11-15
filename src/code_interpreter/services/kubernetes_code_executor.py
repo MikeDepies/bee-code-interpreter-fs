@@ -83,7 +83,7 @@ class KubernetesCodeExecutor:
         self,
         source_code: str,
         files: Mapping[AbsolutePath, Hash] = frozendict(),
-        upload_files: Mapping[AbsolutePath, bytes] = frozendict(),
+        # upload_files: Mapping[AbsolutePath, bytes] = frozendict(),
     ) -> Result:
         """
         Executes the given Python source code in a Kubernetes pod.
@@ -98,17 +98,21 @@ class KubernetesCodeExecutor:
         ) as client:
             executor_pod_ip = executor_pod["status"]["podIP"]
 
-            logger.info("Storing %s upload files", len(upload_files))
-            upload_file_hashes = {}
-            for file_path, file_data in upload_files.items():
-                file_hash = await self.file_storage.write(file_data)
-                upload_file_hashes[file_path] = file_hash
+            # logger.info("Storing %s upload files", len(upload_files))
+            # upload_file_hashes = {}
+            # for file_path, file_data in upload_files.items():
+            #     file_hash = await self.file_storage.write(file_data)
+            #     upload_file_hashes[file_path] = file_hash
             
-            files = {**files, **upload_file_hashes}
+            # files = {**files, **upload_file_hashes}
             async def upload_file(file_path, file_hash):
                 async with self.file_storage.reader(file_hash) as file_reader:
+                    if file_path.startswith("/runtime-packages/"):
+                        upload_path = f"/runtime-packages/{file_path}"
+                    else:
+                        upload_path = f"/workspace/{file_path}"
                     return await client.put(
-                        f"http://{executor_pod_ip}:8000/workspace/{file_path.removeprefix("/workspace/")}",
+                        f"http://{executor_pod_ip}:8000{upload_path}",
                         data=file_reader,
                     )
 
@@ -219,6 +223,9 @@ class KubernetesCodeExecutor:
                     "kind": "Pod",
                     "metadata": {
                         "name": name,
+                        "labels": {
+                            "app": "code-executor"
+                        },
                         "ownerReferences": [
                             {
                                 "apiVersion": "v1",
