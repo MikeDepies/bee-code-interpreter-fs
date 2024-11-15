@@ -122,4 +122,5 @@ class ApplicationContext:
             code_executor=self.code_executor,
             custom_tool_executor=self.custom_tool_executor,
             request_id_context_var=self.request_id_context_var,
+            file_storage=self.file_storage,
         )

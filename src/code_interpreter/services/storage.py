@@ -88,3 +88,14 @@ class Storage:
         Check if an object with the given hash exists in the storage.
         """
         return await (self.storage_path / object_hash).exists()
+
+    @validate_call
+    async def delete(self, object_hash: Hash) -> None:
+        """
+        Delete an object with the given hash from the storage.
+        """
+        file_path = self.storage_path / object_hash
+        if await file_path.exists():
+            await file_path.unlink()
+        else:
+            raise FileNotFoundError(f"File not found: {object_hash}")

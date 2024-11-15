@@ -68,9 +68,9 @@ static REQUIREMENTS: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock:
 async fn upload_file(
     mut payload: web::Payload,
     path: web::Path<String>,
+    base_path: web::Path<String>,
 ) -> Result<HttpResponse, Error> {
-    let workspace = env::var("APP_WORKSPACE").unwrap_or_else(|_| "/workspace".to_string());
-    let file_path = format!("{}/{}", workspace, path);
+    let file_path = format!("{}/{}", base_path, path);
     let file_dir = Path::new(&file_path).parent().unwrap();
     fs::create_dir_all(file_dir).await?;
     let mut file = OpenOptions::new()
@@ -86,9 +86,11 @@ async fn upload_file(
     Ok(HttpResponse::NoContent().finish())
 }
 
-async fn download_file(path: web::Path<String>) -> Result<HttpResponse, Error> {
-    let workspace = env::var("APP_WORKSPACE").unwrap_or_else(|_| "/workspace".to_string());
-    let file = tokio::fs::File::open(format!("{}/{}", workspace, path)).await?;
+async fn download_file(
+    path: web::Path<String>,
+    base_path: web::Path<String>,
+) -> Result<HttpResponse, Error> {
+    let file = tokio::fs::File::open(format!("{}/{}", base_path, path)).await?;
     Ok(HttpResponse::Ok()
         .content_type("application/octet-stream")
         .streaming(tokio_util::io::ReaderStream::new(file)))
@@ -118,9 +120,23 @@ async fn get_changed_files(dir: &str, since: SystemTime) -> Vec<String> {
 
 async fn execute(payload: web::Json<ExecuteRequest>) -> Result<HttpResponse, Error> {
     let workspace = env::var("APP_WORKSPACE").unwrap_or_else(|_| "/workspace".to_string());
+    let runtime_packages = "/runtime-packages";
     let execution_start_time = SystemTime::now();
     let source_dir = TempDir::new()?;
     
+    let mut read_dir = fs::read_dir(&workspace).await?;
+    while let Some(entry) = read_dir.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(extension) = path.extension() {
+                if extension == "py" {
+                    let file_name = path.file_name().unwrap();
+                    fs::copy(&path, Path::new(runtime_packages).join(file_name)).await?;
+                }
+            }
+        }
+    }
+
     tokio::fs::write(source_dir.path().join("script.py"), &payload.source_code).await?;
     let guessed_deps = String::from_utf8_lossy(
         &Command::new("upm")
@@ -146,6 +162,7 @@ async fn execute(payload: web::Json<ExecuteRequest>) -> Result<HttpResponse, Err
     }
 
     tokio::fs::rename(source_dir.path().join("script.py"), source_dir.path().join("script.xsh")).await?;
+    // log::info!("Current directory: {:?}", source_dir.path());
     
     let timeout = Duration::from_secs(payload.timeout.unwrap_or(60));
     let (stdout, stderr, exit_code) = tokio::time::timeout(
@@ -184,8 +201,8 @@ async fn web() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
             .wrap(Logger::default())
-            .route("/workspace/{path:.*}", web::put().to(upload_file))
-            .route("/workspace/{path:.*}", web::get().to(download_file))
+            .route("/{base_path}/{path:.*}", web::put().to(upload_file))
+            .route("/{base_path}/{path:.*}", web::get().to(download_file))
             .route("/execute", web::post().to(execute))
     })
     .bind(&listen_addr)?

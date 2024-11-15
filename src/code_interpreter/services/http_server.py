@@ -19,10 +19,10 @@ from contextvars import ContextVar
 from typing import List, Dict
 
 from code_interpreter.utils.validation import AbsolutePath, Hash
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-
+from code_interpreter.services.storage import Storage
 from code_interpreter.services.custom_tool_executor import (
     CustomToolExecuteError,
     CustomToolExecutor,
@@ -76,6 +76,7 @@ def create_http_server(
     code_executor: KubernetesCodeExecutor,
     custom_tool_executor: CustomToolExecutor,
     request_id_context_var: ContextVar[str],
+    file_storage: Storage,
 ):
     app = FastAPI()
 
@@ -83,6 +84,61 @@ def create_http_server(
         request_id = str(uuid.uuid4())
         request_id_context_var.set(request_id)
         return request_id
+    
+    @app.delete("/v1/files/{file_hash}")
+    async def delete_file(
+        file_hash: str,
+        request_id: str = Depends(set_request_id)
+    ):
+        await file_storage.delete(file_hash)
+        logger.info("Deleted file with hash %s", file_hash)
+        return {"message": "File deleted"}
+
+    @app.get("/v1/files/{file_hash}")
+    async def get_file(
+        file_hash: str,
+        delete: bool = False,
+        request_id: str = Depends(set_request_id)
+    ):
+        """Get file content by hash, with optional deletion after retrieval."""
+        try:
+            async with file_storage.reader(file_hash) as file_reader:
+                content = await file_reader.read()
+                
+            if delete:
+                await file_storage.delete(file_hash)
+                logger.info("Deleted file with hash %s", file_hash)
+                
+            return Response(
+                content=content,
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": f"attachment; filename={file_hash}"
+                }
+            )
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"File with hash {file_hash} not found"
+            )
+        except Exception as e:
+            logger.exception("Error retrieving file")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.put("/v1/files")
+    async def write_file(
+        file: UploadFile,
+        request_id: str = Depends(set_request_id)
+    ):
+        """Write uploaded file data to storage and return the hash."""
+        try:
+            content = await file.read()
+            stored_hash = await file_storage.write(content)
+            logger.info("Wrote file with hash %s", stored_hash)
+            return {"hash": stored_hash}
+        except Exception as e:
+            logger.exception("Error writing file")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/v1/execute", response_model=ExecuteResponse)
     async def execute(

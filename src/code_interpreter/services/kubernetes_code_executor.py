@@ -83,6 +83,7 @@ class KubernetesCodeExecutor:
         self,
         source_code: str,
         files: Mapping[AbsolutePath, Hash] = frozendict(),
+        upload_files: Mapping[AbsolutePath, bytes] = frozendict(),
     ) -> Result:
         """
         Executes the given Python source code in a Kubernetes pod.
@@ -97,6 +98,13 @@ class KubernetesCodeExecutor:
         ) as client:
             executor_pod_ip = executor_pod["status"]["podIP"]
 
+            logger.info("Storing %s upload files", len(upload_files))
+            upload_file_hashes = {}
+            for file_path, file_data in upload_files.items():
+                file_hash = await self.file_storage.write(file_data)
+                upload_file_hashes[file_path] = file_hash
+            
+            files = {**files, **upload_file_hashes}
             async def upload_file(file_path, file_hash):
                 async with self.file_storage.reader(file_hash) as file_reader:
                     return await client.put(

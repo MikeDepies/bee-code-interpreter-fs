@@ -93,8 +93,8 @@ ARG UID
 RUN echo "executor:x:${UID}:${UID}::/home/executor:" >> /etc/passwd && \
     echo "executor:!::0:::::" >> /etc/shadow && \
     echo "executor:x:${UID}:" >> /etc/group && \
-    mkdir -p /home/executor /workspace /venv && \
-    chown -R executor:executor /home/executor /workspace /venv
+    mkdir -p /home/executor /workspace /venv /runtime-packages && \
+    chown -R executor:executor /home/executor /workspace /venv /runtime-packages
 USER executor
 
 # Cache fonts
@@ -106,7 +106,7 @@ COPY requirements.txt requirements-skip.txt /
 RUN python -m venv --system-site-packages /venv && /venv/bin/pip install --no-cache-dir -r /requirements.txt
 COPY sitecustomize.py /venv/lib/python${PYTHON_VERSION}/site-packages
 ENV PATH="/venv/bin:$PATH"
-ENV PYTHONPATH="/venv/lib/python${PYTHON_VERSION}/site-packages/"
+ENV PYTHONPATH="/venv/lib/python${PYTHON_VERSION}/site-packages/:/runtime-packages"
 
 # Pandoc
 COPY pandoc-wrapper /usr/local/bin/pandoc
