@@ -30,7 +30,7 @@ from tenacity import (
 )
 import random
 import string
-
+from typing import Optional
 from code_interpreter.services.kubectl import Kubectl
 from code_interpreter.services.storage import Storage
 from code_interpreter.utils.validation import AbsolutePath, Hash
@@ -81,8 +81,9 @@ class KubernetesCodeExecutor:
     @validate_call
     async def execute(
         self,
-        source_code: str,
+        source_file: Optional[AbsolutePath],
         files: Mapping[AbsolutePath, Hash] = frozendict(),
+        timeout: float = 60.0,
         # upload_files: Mapping[AbsolutePath, bytes] = frozendict(),
     ) -> Result:
         """
@@ -94,7 +95,7 @@ class KubernetesCodeExecutor:
         Every time, a fresh pod is taken from a queue. It is discarded after use.
         """
         async with self.executor_pod() as executor_pod, httpx.AsyncClient(
-            timeout=60.0
+            timeout=timeout
         ) as client:
             executor_pod_ip = executor_pod["status"]["podIP"]
 
@@ -129,7 +130,7 @@ class KubernetesCodeExecutor:
                 await client.post(
                     f"http://{executor_pod_ip}:8000/execute",
                     json={
-                        "source_code": source_code,
+                        "source_file": source_file,
                     },
                 )
             ).json()

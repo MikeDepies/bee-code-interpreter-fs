@@ -16,7 +16,7 @@ import json
 import logging
 import uuid
 from contextvars import ContextVar
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from code_interpreter.utils.validation import AbsolutePath, Hash
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, Response
@@ -34,9 +34,9 @@ logger = logging.getLogger("code_interpreter_service")
 
 
 class ExecuteRequest(BaseModel):
-    source_code: str
+    source_file: AbsolutePath
     files: Dict[AbsolutePath, Hash]
-
+    timeout: int = 60
 
 class ExecuteResponse(BaseModel):
     stdout: str
@@ -145,13 +145,13 @@ def create_http_server(
         request: ExecuteRequest, request_id: str = Depends(set_request_id)
     ):
         logger.info(
-            "Executing code with files %s: %s", request.files, request.source_code
+            "Executing code with files %s: %s", request.files, request.source_file
         )
         try:
             result = await code_executor.execute(
-                source_code=request.source_code,
+                source_file=request.source_file,
                 files=request.files,
-                
+                timeout=request.timeout,
             )
         except Exception as e:
             logger.exception("Error executing code")

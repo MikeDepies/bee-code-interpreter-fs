@@ -28,7 +28,7 @@ use std::time::UNIX_EPOCH;
 
 #[derive(Serialize, Deserialize)]
 struct ExecuteRequest {
-    source_code: String,
+    source_file: String,
     timeout: Option<u64>,
 }
 
@@ -169,7 +169,8 @@ async fn execute(payload: web::Json<ExecuteRequest>) -> Result<HttpResponse, Err
     println!("Contents of /runtime-packages:");
     log_directory_contents("/runtime-packages", "").await;
 
-    tokio::fs::write(source_dir.path().join("script.py"), &payload.source_code).await?;
+    let source_filename = Path::new(&payload.source_file).file_name().unwrap_or_default();
+    tokio::fs::copy(&payload.source_file, source_dir.path().join(source_filename)).await?;
     let guessed_deps = String::from_utf8_lossy(
         &Command::new("upm")
             .arg("guess")
@@ -193,13 +194,15 @@ async fn execute(payload: web::Json<ExecuteRequest>) -> Result<HttpResponse, Err
             .await?;
     }
 
-    tokio::fs::rename(source_dir.path().join("script.py"), source_dir.path().join("script.xsh")).await?;
+    let xsh_filename = source_filename.to_str().unwrap().rsplit_once('.').map(|(name, _)| format!("{}.xsh", name)).unwrap_or_else(|| format!("{}.xsh", source_filename.to_str().unwrap()));
+    println!("Renaming {} to {}", source_filename.to_str().unwrap(), xsh_filename);
+    tokio::fs::rename(source_dir.path().join(source_filename), source_dir.path().join(&xsh_filename)).await?;
     
     let timeout = Duration::from_secs(payload.timeout.unwrap_or(60));
     let (stdout, stderr, exit_code) = tokio::time::timeout(
         timeout,
         Command::new("xonsh") // TODO: manually switch between python and shell for ~80ms perf gain
-            .arg(source_dir.path().join("script.xsh"))
+            .arg(source_dir.path().join(&xsh_filename))
             .output(),
     )
     .await
